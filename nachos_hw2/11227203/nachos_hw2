@@ -1,0 +1,501 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <chrono>
+#include <ctime>
+#include <iomanip>   // setprecision
+#include <cstdio>    // sprintf
+
+// multi-process 需要的 header
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+// multi-thread 需要的 header
+#include <pthread.h>
+
+using namespace std;
+using Clock = chrono::high_resolution_clock;
+
+vector<int> readFile(const string &filename);
+void writeOutput(const string &outName,
+                 const vector<int> &data,
+                 double cpu_time,
+                 const string &outputTime);
+string getCurrentTimeString();
+double calcCpuTime(Clock::time_point start, Clock::time_point end);
+
+void bubbleSort(vector<int> &a, int left, int right);
+void mergeTwoSortedRanges(vector<int> &a, int l, int m, int r);
+void mergeSortRecursive(vector<int> &a, int l, int r);
+
+void bubbleSortArr(int *a, int left, int right);
+void mergeTwoSortedRangesArr(int *a, int l, int m, int r);
+
+// thread worker 用的結構
+struct BubbleArg {
+    vector<int> *data;
+    int l, r;
+};
+struct MergeArg {
+    vector<int> *data;
+    int l, m, r;
+};
+void* bubbleThreadFunc(void *arg);
+void* mergeThreadFunc(void *arg);
+
+// 四種 method
+void method1(vector<int> &data);
+void method2(vector<int> &data, int K);
+void method3(vector<int> &data, int K); // multi-process
+void method4(vector<int> &data, int K); // multi-thread (pthread)
+
+// ------------- 主程式 ------------- //
+int main() {
+    string filename;
+    int K;
+    int method;
+
+    cout << "請輸入檔案名稱: \n";
+    cin >> filename;          // 這裡輸入「input_1w」，不要加 .txt
+    cout << "請輸入要切成幾份: \n";
+    cin >> K;
+    cout << "請輸入方法編號:(方法1， 方法2， 方法3， 方法4) \n";
+    cin >> method;
+
+    // 讀檔
+    vector<int> data = readFile(filename);
+    if (data.empty()) {
+        cerr << "No data read. Exit.\n";
+        return 1;
+    }
+
+    // 計時開始
+    auto t1 = Clock::now();
+
+    switch (method) {
+        case 1:
+            method1(data);
+            break;
+        case 2:
+            method2(data, K);
+            break;
+        case 3:
+            method3(data, K);
+            break;
+        case 4:
+            method4(data, K);
+            break;
+        default:
+            cerr << "Invalid method.\n";
+            return 1;
+    }
+
+    // 計時結束
+    auto t2 = Clock::now();
+    double cpu_time = calcCpuTime(t1, t2);     // 單位：秒（浮點數）
+
+    // 輸出檔名：輸入檔名 + "_output" + method 編號 + ".txt"
+    string outName = filename + "_output" + to_string(method) + ".txt";
+    string outTime = getCurrentTimeString();
+
+    writeOutput(outName, data, cpu_time, outTime);
+
+    cout << "Done. Output file: " << outName << endl;
+    return 0;
+}
+
+// ------------- 檔案讀寫 + 時間工具 ------------- //
+
+// 讀檔：把所有整數讀進 vector
+// 例如 filename = "input_1w"，實際讀 "input_1w.txt"
+vector<int> readFile(const string &filename) {
+    vector<int> data;
+    string realname = filename + ".txt";
+    ifstream fin(realname);
+    if (!fin) {
+        cerr << "Cannot open file: " << realname << endl;
+        return data;
+    }
+    int x;
+    while (fin >> x) {
+        data.push_back(x);
+    }
+    return data;
+}
+
+// 寫檔：輸出排序結果 + CPU Time + Output Time
+void writeOutput(const string &outName,
+                 const vector<int> &data,
+                 double cpu_time,
+                 const string &outputTime) {
+    ofstream fout(outName);
+    if (!fout) {
+        cerr << "Cannot open output file: " << outName << endl;
+        return;
+    }
+
+    // 排序結果：每一行一個數字
+    fout <<"Sort : \n";
+    for (size_t i = 0; i < data.size(); ++i) {
+        fout << data[i] << "\n";
+    }
+
+    // CPU Time：浮點數（秒），很多小數位
+    fout << "CPU Time : " << fixed << setprecision(12) << cpu_time << "\n";
+    // Output Time：YYYY-MM-DD HH:MM:SS.微秒+08:00
+    fout << "Output Time : " << outputTime;
+}
+
+// 取得現在時間字串
+string getCurrentTimeString() {
+    // 現在時間點
+    auto now = chrono::system_clock::now();
+
+    // 轉成 time_t（秒）
+    time_t tt = chrono::system_clock::to_time_t(now);
+
+    // 抓出微秒部分
+    auto micros = chrono::duration_cast<chrono::microseconds>(
+                      now.time_since_epoch()) % 1000000;
+
+    // 轉成本地時間（系統要設成 UTC+8）
+    tm *lt = localtime(&tt);
+
+    // 先印出 YYYY-MM-DD HH:MM:SS
+    char datebuf[64];
+    strftime(datebuf, sizeof(datebuf), "%Y-%m-%d %H:%M:%S", lt);
+
+    // 再接上 .微秒 +08:00
+    char finalbuf[80];
+    sprintf(finalbuf, "%s.%06ld+08:00", datebuf, (long)micros.count());
+
+    return string(finalbuf);
+}
+
+// 回傳 CPU 執行時間（秒）
+double calcCpuTime(Clock::time_point start, Clock::time_point end) {
+    chrono::duration<double> diff = end - start;
+    return diff.count();
+}
+
+// ------------- 排序相關（vector 版）------------- //
+
+// Bubble Sort：排 [left, right) 這段（右邊界不含）
+void bubbleSort(vector<int> &a, int left, int right) {
+    if (right - left <= 1) return;
+    for (int i = left; i < right - 1; ++i) {
+        for (int j = left; j < right - 1 - (i - left); ++j) {
+            if (a[j] > a[j + 1]) {
+                swap(a[j], a[j + 1]);
+            }
+        }
+    }
+}
+
+// Merge 兩段已排序區間： [l, m) & [m, r) → 合併為 [l, r)
+void mergeTwoSortedRanges(vector<int> &a, int l, int m, int r) {
+    vector<int> temp;
+    temp.reserve(r - l);
+    int i = l, j = m;
+    while (i < m && j < r) {
+        if (a[i] <= a[j]) temp.push_back(a[i++]);
+        else temp.push_back(a[j++]);
+    }
+    while (i < m) temp.push_back(a[i++]);
+    while (j < r) temp.push_back(a[j++]);
+
+    for (int k = 0; k < (int)temp.size(); ++k) {
+        a[l + k] = temp[k];
+    }
+}
+
+// 遞迴 Merge Sort：排 [l, r)
+void mergeSortRecursive(vector<int> &a, int l, int r) {
+    if (r - l <= 1) return;
+    int m = (l + r) / 2;
+    mergeSortRecursive(a, l, m);
+    mergeSortRecursive(a, m, r);
+    mergeTwoSortedRanges(a, l, m, r);
+}
+
+
+void bubbleSortArr(int *a, int left, int right) {
+    if (right - left <= 1) return;
+    for (int i = left; i < right - 1; ++i) {
+        for (int j = left; j < right - 1 - (i - left); ++j) {
+            if (a[j] > a[j + 1]) {
+                int tmp = a[j];
+                a[j] = a[j + 1];
+                a[j + 1] = tmp;
+            }
+        }
+    }
+}
+
+void mergeTwoSortedRangesArr(int *a, int l, int m, int r) {
+    vector<int> temp;
+    temp.reserve(r - l);
+    int i = l, j = m;
+    while (i < m && j < r) {
+        if (a[i] <= a[j]) temp.push_back(a[i++]);
+        else temp.push_back(a[j++]);
+    }
+    while (i < m) temp.push_back(a[i++]);
+    while (j < r) temp.push_back(a[j++]);
+
+    for (int k = 0; k < (int)temp.size(); ++k) {
+        a[l + k] = temp[k];
+    }
+}
+
+// ------------- thread worker 函式 ------------- //
+
+void* bubbleThreadFunc(void *arg) {
+    BubbleArg *p = (BubbleArg*)arg;
+    bubbleSort(*(p->data), p->l, p->r);
+    return nullptr;
+}
+
+void* mergeThreadFunc(void *arg) {
+    MergeArg *p = (MergeArg*)arg;
+    mergeTwoSortedRanges(*(p->data), p->l, p->m, p->r);
+    return nullptr;
+}
+
+// ------------- 四種 Method 實作 ------------- //
+
+// Method 1：全部資料先 Bubble Sort，再整段 Merge Sort
+void method1(vector<int> &data) {
+    bubbleSort(data, 0, (int)data.size());
+    mergeSortRecursive(data, 0, (int)data.size());
+}
+
+// Method 2：切成 K 段，在同一個 process 依序 BubbleSort 每一段，再用 Merge 合併
+void method2(vector<int> &data, int K) {
+    int n = (int)data.size();
+    if (K <= 1 || K > n) {
+        // 不合理的 K，退化成 Method 1
+        method1(data);
+        return;
+    }
+
+    struct Segment {
+        int l, r;
+    };
+    vector<Segment> segs;
+    segs.reserve(K);
+
+    int baseLen = n / K;
+    int extra = n % K;  // 前 extra 段多一個元素
+
+    int cur = 0;
+    for (int i = 0; i < K; ++i) {
+        int len = baseLen + (i < extra ? 1 : 0);
+        int l = cur;
+        int r = cur + len;
+        segs.push_back({l, r});
+        cur = r;
+    }
+
+    // 先對每一段做 Bubble Sort
+    for (int i = 0; i < K; ++i) {
+        bubbleSort(data, segs[i].l, segs[i].r);
+    }
+
+    // 再把 K 段用兩兩合併方式 merge 成一整段
+    while ((int)segs.size() > 1) {
+        vector<Segment> newSegs;
+        for (size_t i = 0; i < segs.size(); i += 2) {
+            if (i + 1 < segs.size()) {
+                int l = segs[i].l;
+                int m = segs[i].r;
+                int r = segs[i + 1].r;
+                mergeTwoSortedRanges(data, l, m, r);
+                newSegs.push_back({l, r});
+            } else {
+                // 奇數個，最後一段直接帶到下一輪
+                newSegs.push_back(segs[i]);
+            }
+        }
+        segs.swap(newSegs);
+    }
+    // 最後 segs[0] 就是 [0, n)
+}
+
+// Method 3：multi-process + shared memory 版
+void method3(vector<int> &data, int K) {
+    int n = (int)data.size();
+    if (K <= 1 || K > n) {
+        method1(data);
+        return;
+    }
+
+    // 建立 shared memory，大小 n * sizeof(int)
+    int shmid = shmget(IPC_PRIVATE, n * sizeof(int), IPC_CREAT | 0600);
+    if (shmid < 0) {
+        return;
+    }
+
+    // attach 到本 process
+    int *shm = (int*)shmat(shmid, nullptr, 0);
+    if (shm == (void*)-1) {
+        return;
+    }
+
+    // 把 data 複製到 shared memory
+    for (int i = 0; i < n; ++i) shm[i] = data[i];
+
+    // 切 K 段
+    struct Segment {
+        int l, r;
+    };
+    vector<Segment> segs;
+    segs.reserve(K);
+
+    int baseLen = n / K;
+    int extra = n % K;
+
+    int cur = 0;
+    for (int i = 0; i < K; ++i) {
+        int len = baseLen + (i < extra ? 1 : 0);
+        int l = cur;
+        int r = cur + len;
+        segs.push_back({l, r});
+        cur = r;
+    }
+
+    // K 個 child processes 各自 BubbleSort 各自負責的區段
+    for (int i = 0; i < K; ++i) {
+        pid_t pid = fork();
+        if (pid < 0) {
+            cerr << "fork failed in bubble phase.\n";
+        } else if (pid == 0) {
+            // child：只負責自己的區段
+            bubbleSortArr(shm, segs[i].l, segs[i].r);
+            shmdt(shm);
+            _exit(0);
+        }
+        // parent 繼續迴圈
+    }
+
+    // parent 等待 K 個 child
+    for (int i = 0; i < K; ++i) {
+        wait(nullptr);
+    }
+
+    // Merge 階段：總共會做 K-1 次合併，每次合併開一個 child process 來做
+    while ((int)segs.size() > 1) {
+        vector<Segment> newSegs;
+        for (size_t i = 0; i < segs.size(); i += 2) {
+            if (i + 1 < segs.size()) {
+                int l = segs[i].l;
+                int m = segs[i].r;
+                int r = segs[i + 1].r;
+
+                pid_t pid = fork();
+                if (pid < 0) {
+                    cerr << "fork failed in merge phase, merge in parent.\n";
+                    mergeTwoSortedRangesArr(shm, l, m, r);
+                } else if (pid == 0) {
+                    // child：做這一對區段的 merge
+                    mergeTwoSortedRangesArr(shm, l, m, r);
+                    shmdt(shm);
+                    _exit(0);
+                } else {
+                    // parent 等這個 merge 結束
+                    waitpid(pid, nullptr, 0);
+                }
+
+                newSegs.push_back({l, r});
+            } else {
+                // 奇數個，最後一段直接帶到下一輪
+                newSegs.push_back(segs[i]);
+            }
+        }
+        segs.swap(newSegs);
+    }
+
+    // 把 shared memory 裡的結果複製回 data
+    for (int i = 0; i < n; ++i) {
+        data[i] = shm[i];
+    }
+
+    // detach + 刪除 shared memory
+    shmdt(shm);
+    shmctl(shmid, IPC_RMID, nullptr);
+}
+
+// Method 4：multi-thread (pthread) 版
+void method4(vector<int> &data, int K) {
+    int n = (int)data.size();
+    if (K <= 1 || K > n) {
+        method1(data);
+        return;
+    }
+
+    struct Segment {
+        int l, r;
+    };
+    vector<Segment> segs;
+    segs.reserve(K);
+
+    int baseLen = n / K;
+    int extra = n % K;  // 前 extra 段多一個元素
+
+    int cur = 0;
+    for (int i = 0; i < K; ++i) {
+        int len = baseLen + (i < extra ? 1 : 0);
+        int l = cur;
+        int r = cur + len;
+        segs.push_back({l, r});
+        cur = r;
+    }
+
+    // -------------- BubbleSort：K 個 threads 同時做 -------------- //
+    vector<pthread_t> tids(K);
+    vector<BubbleArg> bargs(K);
+
+    for (int i = 0; i < K; ++i) {
+        bargs[i].data = &data;
+        bargs[i].l = segs[i].l;
+        bargs[i].r = segs[i].r;
+        pthread_create(&tids[i], nullptr, bubbleThreadFunc, &bargs[i]);
+    }
+    // 等全部 BubbleSort threads 結束
+    for (int i = 0; i < K; ++i) {
+        pthread_join(tids[i], nullptr);
+    }
+
+    // -------------- Merge：總共開 K-1 個 threads 依序合併 -------------- //
+    while ((int)segs.size() > 1) {
+        vector<Segment> newSegs;
+        for (size_t i = 0; i < segs.size(); i += 2) {
+            if (i + 1 < segs.size()) {
+                int l = segs[i].l;
+                int m = segs[i].r;
+                int r = segs[i + 1].r;
+
+                pthread_t tid;
+                MergeArg marg;
+                marg.data = &data;
+                marg.l = l;
+                marg.m = m;
+                marg.r = r;
+
+                pthread_create(&tid, nullptr, mergeThreadFunc, &marg);
+                pthread_join(tid, nullptr);   // 這個 merge 做完才處理下一對
+
+                newSegs.push_back({l, r});
+            } else {
+                // 奇數個，最後一段直接帶到下一輪
+                newSegs.push_back(segs[i]);
+            }
+        }
+        segs.swap(newSegs);
+    }
+    // 最後 segs[0] = [0, n)
+}
