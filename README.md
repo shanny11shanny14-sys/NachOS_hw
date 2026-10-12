@@ -121,10 +121,53 @@ Output
 #### Method 3
 
 把資料切成 K 份，建立 K 個 processes 分別進行 Bubble Sort，再由另外的 process(es) 進行 Merge Sort。
+```text
+K=4：
+100萬筆
+↓
+切 4 份
+
+        parent
+          │
+   ┌──────┼──────┐
+   ↓      ↓      ↓
+process process process process
+  1       2       3       4
+  ↓       ↓       ↓       ↓
+Bubble  Bubble  Bubble  Bubble
+```
+
+4 個 process 可以分工。
+然後再 Merge。
+因為 process 記憶體分開，所以通常需要：
+shared memory
+協助交換資料。
 
 #### Method 4
 
 把資料切成 K 份，建立 K 個 threads 分別進行 Bubble Sort，再由 K-1 個 thread(s) 進行 Merge Sort。
+```text
+也是：
+100萬筆
+↓
+切4份
+
+       process
+          │
+   ┌──────┼──────┐
+   ↓      ↓      ↓
+thread  thread  thread  thread
+  1       2       3       4
+  ↓       ↓       ↓       ↓
+Bubble  Bubble  Bubble  Bubble
+```
+
+但這些 thread 都在同一個 process 裡。
+因此：
+大家共用記憶體
+
+通常資料交換會比 process 方便。
+
 
 ### 輸出內容
 
