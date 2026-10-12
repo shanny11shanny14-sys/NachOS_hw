@@ -45,6 +45,8 @@
 - Close
 
 ### 我這次主要練習到
+```text
+
 C 程式
 fileIO_test1.c / fileIO_test2.c
         ↓
@@ -61,6 +63,8 @@ ksyscall.h
         ↓
 filesys.h
 真正做檔案操作
+```
+
 
 - System Call 的基本流程
 - NachOS 中 User Program 與 Kernel 的互動
