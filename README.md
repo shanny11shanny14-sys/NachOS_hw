@@ -95,11 +95,11 @@ filesys.h
 直接對全部資料進行 Bubble Sort。
 
 ```text
-Input
-  ↓
+100 萬筆
+   ↓
 Bubble Sort
-  ↓
-Output
+   ↓
+完成
 ```
 
 #### Method 2
@@ -107,15 +107,13 @@ Output
 先把 N 筆資料切成 K 份，由一個 process 對每一份資料做 Bubble Sort，最後再進行 Merge Sort。
 
 ```text
-Input
-  ↓
-Split into K parts
-  ↓
-Bubble Sort
-  ↓
-Merge Sort
-  ↓
-Output
+100 萬筆
+↓
+25萬 | 25萬 | 25萬 | 25萬
+  ↓      ↓      ↓      ↓
+Bubble Bubble Bubble Bubble
+
+但是仍由一個 process 做
 ```
 
 #### Method 3
