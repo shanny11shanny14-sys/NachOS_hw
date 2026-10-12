@@ -45,6 +45,22 @@
 - Close
 
 ### 我這次主要練習到
+C 程式
+fileIO_test1.c / fileIO_test2.c
+        ↓
+呼叫 Open / Write / Read / Close
+        ↓
+start.S
+把 system call 編號放進暫存器，執行 syscall
+        ↓
+exception.cc
+Kernel 收到 syscall，判斷是哪一種
+        ↓
+ksyscall.h
+轉呼叫 kernel 功能
+        ↓
+filesys.h
+真正做檔案操作
 
 - System Call 的基本流程
 - NachOS 中 User Program 與 Kernel 的互動
